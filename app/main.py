@@ -1,5 +1,6 @@
-"""FastAPI application for Stremio Arabic Subtitles Addon (Vercel Ready)."""
+"""FastAPI application for Stremio Arabic Subtitles Addon (Vercel Ready & Stateless)."""
 
+import base64
 import hashlib
 import json
 import logging
@@ -63,7 +64,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("stremio_arabic_subs")
 
-# Global HTTP client container
 _http_client: httpx.AsyncClient | None = None
 
 
@@ -104,10 +104,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Mount local static assets
 static_dir = Path(__file__).parent / "static"
-static_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
 @app.get("/favicon.ico", include_in_schema=False)
@@ -119,7 +118,6 @@ async def favicon_ico():
     return Response(status_code=404)
 
 
-# Mandatory Stremio CORS configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -142,7 +140,6 @@ async def add_global_cors_headers(request: Request, call_next):
 def _build_manifest(config_str: str | None = None, request: Request | None = None) -> Manifest:
     """Build Stremio Manifest object with community-standard behaviorHints."""
     desc = "Smart, high-accuracy subtitle aggregator for Stremio featuring advanced Arabic subtitle optimization."
-
     base_url = get_base_url(request)
     icon_url = f"{base_url}/static/icon.png"
     logo_url = f"{base_url}/static/icon.png"
@@ -274,7 +271,6 @@ def render_configure_html(request: Request, prefill_config: str | None = None) -
 
 @app.get("/api/verify/subdl")
 async def verify_subdl_endpoint(api_key: str | None = None):
-    """Real-time validation for Subdl API key."""
     if not api_key or not api_key.strip():
         return {"valid": False, "message": "API key is required"}
 
@@ -296,11 +292,7 @@ async def verify_subdl_endpoint(api_key: str | None = None):
             if data.get("status") is False:
                 status_code = data.get("statusCode")
                 err_text = str(data.get("error", "")).lower()
-                if (
-                    status_code in (401, 403)
-                    or "not_authorized" in err_text
-                    or "invalid" in err_text
-                ):
+                if status_code in (401, 403) or "not_authorized" in err_text or "invalid" in err_text:
                     return {"valid": False, "message": data.get("message", "Invalid API key")}
             return {"valid": True, "message": "Valid API key"}
         elif resp.status_code in (401, 403):
@@ -319,7 +311,6 @@ uvicorn_logger = logging.getLogger("uvicorn.error")
 
 @app.get("/api/verify/subsource")
 async def verify_subsource_endpoint(api_key: str | None = None):
-    """Diagnostic validation for Subsource API key."""
     if not api_key or not api_key.strip():
         return {"valid": False, "message": "API key is required"}
 
@@ -336,10 +327,7 @@ async def verify_subsource_endpoint(api_key: str | None = None):
         (f"https://api.subsource.net/api/v1/subtitles?apiKey={key}&imdb_id=tt0903747", None),
         (f"https://api.subsource.net/api/v1/subtitles?api_key={key}&imdb_id=tt0903747", None),
         ("https://api.subsource.net/api/v1/user", None),
-        (
-            "https://api.subsource.net/api/v1/movies/search",
-            {"searchType": "imdb", "q": "tt0903747"},
-        ),
+        ("https://api.subsource.net/api/v1/movies/search", {"searchType": "imdb", "q": "tt0903747"}),
     ]
 
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
@@ -354,10 +342,8 @@ async def verify_subsource_endpoint(api_key: str | None = None):
 
                 if resp.status_code in (200, 404):
                     return {"valid": True}
-
                 if resp.status_code in (401, 403):
                     continue
-
             except Exception as e:
                 uvicorn_logger.error(f"[SubSource Check Error] {str(e)}")
                 last_body = str(e)
@@ -372,7 +358,6 @@ async def verify_subsource_endpoint(api_key: str | None = None):
 
 @app.get("/api/verify/opensubtitles")
 async def verify_opensubtitles_key(api_key: str | None = None):
-    """Real-time validation for OpenSubtitles API key."""
     if not api_key or not api_key.strip():
         return {"valid": False, "message": "API key is required"}
 
@@ -397,20 +382,17 @@ async def verify_opensubtitles_key(api_key: str | None = None):
 @app.get("/", response_class=HTMLResponse)
 @app.get("/configure", response_class=HTMLResponse)
 async def configure_page(request: Request):
-    """Configuration page."""
     return HTMLResponse(content=render_configure_html(request))
 
 
 @app.get("/{config}/configure", response_class=HTMLResponse)
 async def configure_prefill_page(config: str, request: Request):
-    """Configuration page prefilled."""
     return HTMLResponse(content=render_configure_html(request, prefill_config=config))
 
 
 @app.api_route("/manifest.json", methods=["GET", "HEAD", "OPTIONS"], response_model=Manifest)
 @app.api_route("/manifest", methods=["GET", "HEAD", "OPTIONS"], response_model=Manifest)
 async def get_manifest(request: Request):
-    """Stremio Manifest endpoint."""
     return _build_manifest(request=request)
 
 
@@ -419,7 +401,6 @@ async def get_manifest(request: Request):
 )
 @app.api_route("/{config}/manifest", methods=["GET", "HEAD", "OPTIONS"], response_model=Manifest)
 async def get_configured_manifest(config: str, request: Request):
-    """User-configured Stremio Manifest endpoint."""
     return _build_manifest(config_str=config, request=request)
 
 
@@ -430,7 +411,6 @@ async def _fetch_subtitles_handler(
     config_str: str | None = None,
     extra: str | None = None,
 ) -> SubtitlesResponse:
-    """Internal handler to fetch subtitles."""
     client = await get_http_client()
 
     try:
@@ -513,6 +493,7 @@ async def _fetch_subtitles_handler(
         display_score = getattr(rel, "match_percentage", None)
         if display_score is None:
             display_score = rel.score
+
         unique_key = f"{rel.provider}:{rel.release_name}:{rel.download_url}"
         sub_id = hashlib.sha256(unique_key.encode("utf-8")).hexdigest()[:16]
 
@@ -567,9 +548,21 @@ async def _fetch_subtitles_handler(
         elif r_name_lower.endswith(".vtt"):
             sub_format = "vtt"
 
+        # Stateful & Stateless Payload encoding for serverless environments
+        payload = {
+            "p": rel.provider,
+            "u": rel.download_url,
+            "r": rel.release_name,
+            "s": season,
+            "e": episode,
+            "lang": rel_lang,
+            "id": parsed.imdb_id,
+        }
+        encoded_token = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8").rstrip("=")
+
         if rel_prov == "opensubtitles":
             m_fid = re.search(r"(\d+)", rel.download_url)
-            file_id = m_fid.group(1) if m_fid else sub_id
+            file_id = m_fid.group(1) if m_fid else encoded_token
             cache_manager.store_metadata(str(file_id), meta_dict)
             sub_url = (
                 f"{base_url}/{config_str}/sub/opensubtitles/{file_id}.{sub_format}"
@@ -578,9 +571,9 @@ async def _fetch_subtitles_handler(
             )
         else:
             sub_url = (
-                f"{base_url}/{config_str}/sub/{sub_id}.{sub_format}"
+                f"{base_url}/{config_str}/sub/{encoded_token}.{sub_format}"
                 if config_str
-                else f"{base_url}/sub/{sub_id}.{sub_format}"
+                else f"{base_url}/sub/{encoded_token}.{sub_format}"
             )
 
         subtitle_items.append(
@@ -851,6 +844,7 @@ async def _serve_subtitle_handler(
     eastern_numerals_enabled = False
     strip_diacritics_enabled = False
     convert_ass_enabled = True
+    cfg_prefs = UserPreferences()
     if config_str:
         try:
             cfg_prefs = parse_user_config(config_str)
@@ -881,14 +875,8 @@ async def _serve_subtitle_handler(
         detected_format = "srt"
 
     target_id = clean_sub_id
-    m = re.search(r"([a-f0-9]{16})$", clean_sub_id)
-    if m:
-        target_id = m.group(1)
-    elif "_" in clean_sub_id and len(clean_sub_id) > 16:
-        candidate = clean_sub_id.rsplit("_", 1)[-1]
-        if len(candidate) == 16:
-            target_id = candidate
 
+    # 1. Check local cache
     cached_content = await cache_manager.get_subtitle(target_id)
     if cached_content:
         meta = cache_manager.get_metadata(target_id)
@@ -907,9 +895,27 @@ async def _serve_subtitle_handler(
             convert_ass_enabled,
         )
 
+    # 2. Retrieve metadata: from memory or by decoding token payload directly
     meta = cache_manager.get_metadata(target_id)
     if not meta:
-        raise HTTPException(status_code=404, detail="Subtitle metadata not found or expired")
+        try:
+            padded = target_id + "=" * (-len(target_id) % 4)
+            decoded_json = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
+            payload = json.loads(decoded_json)
+            meta = {
+                "provider": payload.get("p"),
+                "download_url": payload.get("u"),
+                "release_name": payload.get("r", target_id),
+                "season": payload.get("s"),
+                "episode": payload.get("e"),
+                "lang": payload.get("lang", "ara"),
+                "imdb_id": payload.get("id"),
+                "subdl_key": cfg_prefs.subdl_key,
+                "subsource_key": cfg_prefs.subsource_key,
+                "opensubtitles_key": cfg_prefs.opensubtitles_key,
+            }
+        except Exception:
+            raise HTTPException(status_code=404, detail="Subtitle metadata not found or expired")
 
     provider_name = meta.get("provider")
     download_url = meta.get("download_url")
@@ -917,18 +923,9 @@ async def _serve_subtitle_handler(
     season = meta.get("season")
     episode = meta.get("episode")
 
-    subdl_key = meta.get("subdl_key")
-    subsource_key = meta.get("subsource_key")
-    opensubtitles_key = meta.get("opensubtitles_key")
-
-    if config_str:
-        cfg_prefs = parse_user_config(config_str)
-        if not subdl_key:
-            subdl_key = cfg_prefs.subdl_key
-        if not subsource_key:
-            subsource_key = cfg_prefs.subsource_key
-        if not opensubtitles_key:
-            opensubtitles_key = cfg_prefs.opensubtitles_key
+    subdl_key = meta.get("subdl_key") or cfg_prefs.subdl_key
+    subsource_key = meta.get("subsource_key") or cfg_prefs.subsource_key
+    opensubtitles_key = meta.get("opensubtitles_key") or cfg_prefs.opensubtitles_key
 
     if not download_url:
         raise HTTPException(status_code=404, detail="Missing download URL for subtitle")
